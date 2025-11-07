@@ -1,0 +1,14 @@
+# env config
+.vscode/
+
+# Java class files
+*.class
+
+# Java bytecode
+*.jar
+*.war
+*.ear
+
+# Maven target directory
+/target/
+
