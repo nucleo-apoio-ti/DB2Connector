@@ -1,0 +1,6 @@
+com/connector/plugin/db2/Db2ConnectorFactory.class
+com/connector/plugin/db2/Db2Plugin.class
+com/connector/plugin/db2/Db2ConnectionPool.class
+com/connector/plugin/db2/Db2Connector.class
+com/connector/plugin/db2/Db2TransactionHandle.class
+com/connector/plugin/db2/Db2Metadata.class
