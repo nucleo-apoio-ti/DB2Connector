@@ -10,5 +10,5 @@
 *.ear
 
 # Maven target directory
-/target/
+demo/target/
 
