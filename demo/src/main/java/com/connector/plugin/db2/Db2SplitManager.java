@@ -23,7 +23,9 @@ public class Db2SplitManager implements ConnectorSplitManager {
         
         Db2TableHandle db2TableHandle = (Db2TableHandle) tableHandle;
 
-        Db2Split split = new Db2Split(db2TableHandle.getSchemaTableName());
+        Db2Split split = new Db2Split(
+            db2TableHandle.getSchemaTableName(),
+            db2TableHandle.getConstraint());
 
         return new FixedSplitSource(List.of(split));
     }

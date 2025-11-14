@@ -15,14 +15,15 @@ import io.trino.spi.StandardErrorCode;
 import io.trino.spi.TrinoException;
 import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.connector.ColumnMetadata;
-import io.trino.spi.connector.ConnectorAnalyzeMetadata;
 import io.trino.spi.connector.ConnectorMetadata;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.connector.ConnectorTableHandle;
 import io.trino.spi.connector.ConnectorTableMetadata;
 import io.trino.spi.connector.ConnectorTableVersion;
+import io.trino.spi.connector.Constraint;
+import io.trino.spi.connector.ConstraintApplicationResult;
 import io.trino.spi.connector.SchemaTableName;
-import io.trino.spi.statistics.TableStatistics;
+import io.trino.spi.predicate.TupleDomain;
 import io.trino.spi.type.BigintType;
 import io.trino.spi.type.DateType;
 import io.trino.spi.type.DoubleType;
@@ -96,6 +97,42 @@ public class Db2Metadata implements ConnectorMetadata{
 
         return tableNames;
     }
+    
+@Override
+public Optional<ConstraintApplicationResult<ConnectorTableHandle>> applyFilter(
+        ConnectorSession session,
+        ConnectorTableHandle table,
+        Constraint constraint) {
+    
+    Db2TableHandle handle = (Db2TableHandle) table;
+    
+    TupleDomain<ColumnHandle> oldDomain = handle.getConstraint();
+    TupleDomain<ColumnHandle> newDomain = constraint.getSummary();
+    
+    TupleDomain<ColumnHandle> combinedDomain = oldDomain.intersect(newDomain);
+    
+    System.out.println("Combined Domain: " + combinedDomain);
+    
+    if (combinedDomain.equals(oldDomain)) {
+        System.out.println("Domains são iguais - retornando empty");
+        return Optional.empty();
+    }
+    
+    // Cria um novo handle com os predicados
+    Db2TableHandle newHandle = new Db2TableHandle(
+        handle.getSchemaTableName(),
+        combinedDomain
+    );
+    
+    System.out.println("Retornando novo handle com constraint");
+    
+    return Optional.of(new ConstraintApplicationResult<>(
+        newHandle,
+        TupleDomain.all(), // Remaining constraint
+        constraint.getExpression(),
+        false // precalculateStatistics
+    ));
+}
 
     @Override
     public ConnectorTableHandle getTableHandle(ConnectorSession session, SchemaTableName tableName,

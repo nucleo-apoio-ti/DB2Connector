@@ -6,7 +6,7 @@
 
     <groupId>com.connector</groupId>
     <artifactId>demo</artifactId>
-    <version>1.0.21-SNAPSHOT</version>
+    <version>1.0.23-SNAPSHOT</version>
 
     <properties>
         <maven.compiler.source>17</maven.compiler.source>

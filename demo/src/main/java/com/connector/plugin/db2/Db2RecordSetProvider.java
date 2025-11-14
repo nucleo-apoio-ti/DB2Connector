@@ -13,7 +13,6 @@ import io.trino.spi.connector.ConnectorTransactionHandle;
 import io.trino.spi.connector.RecordSet;
 import io.trino.spi.connector.SchemaTableName;
 
-import com.connector.plugin.db2.Db2RecordSet;
 
 public class Db2RecordSetProvider implements ConnectorRecordSetProvider{
     
@@ -34,7 +33,7 @@ public class Db2RecordSetProvider implements ConnectorRecordSetProvider{
         }
         List<Db2ColumnHandle> db2Columns = columnHandles.build();
 
-        return new Db2RecordSet(connectionPool, schemaTableName, db2Columns);
+        return new Db2RecordSet(connectionPool, schemaTableName, db2Columns, db2Split.getConstraint());
     }
     
 }

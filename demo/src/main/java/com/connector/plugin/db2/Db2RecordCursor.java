@@ -6,13 +6,20 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.LocalDate;
 import java.time.LocalTime;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 
 import io.airlift.slice.Slice;
 import io.airlift.slice.Slices;
+import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.connector.RecordCursor;
 import io.trino.spi.connector.SchemaTableName;
+import io.trino.spi.predicate.Domain;
+import io.trino.spi.predicate.Range;
+import io.trino.spi.predicate.Ranges;
+import io.trino.spi.predicate.TupleDomain;
 import io.trino.spi.type.BigintType;
 import io.trino.spi.type.DateType;
 import io.trino.spi.type.DoubleType;
@@ -31,25 +38,25 @@ public class Db2RecordCursor implements RecordCursor{
     private final PreparedStatement statement;
     private final ResultSet resultSet;
     
-    public Db2RecordCursor(Db2ConnectionPool connectionPool, SchemaTableName schemaTableName, List<Db2ColumnHandle> columns) {
+    public Db2RecordCursor(Db2ConnectionPool connectionPool, SchemaTableName schemaTableName, List<Db2ColumnHandle> columns, TupleDomain<ColumnHandle> constraint) {
         this.columns = columns;
 
         try {
             this.connection = connectionPool.getConnection();
 
-            String sql = buildSql(schemaTableName, columns);
+            String sql = buildSql(schemaTableName, columns, constraint);
+            System.out.println("SQL GERADO: " + sql);
             
             this.statement = connection.prepareStatement(sql);
             this.resultSet = statement.executeQuery();
 
         } catch (SQLException e) {
-            // Se falhar, fecha tudo e lança um erro
             close();
             throw new RuntimeException("Falha ao executar a consulta no DB2: " + e.getMessage(), e);
         }
     }
 
-    private String buildSql(SchemaTableName schemaTableName, List<Db2ColumnHandle> columns) {
+    private String buildSql(SchemaTableName schemaTableName, List<Db2ColumnHandle> columns, TupleDomain<ColumnHandle> constraint) {
         StringBuilder sqlBuilder = new StringBuilder("SELECT ");
 
         String columnNames = columns.stream()
@@ -61,13 +68,129 @@ public class Db2RecordCursor implements RecordCursor{
         sqlBuilder.append(columnNames);
         
         sqlBuilder.append(" FROM ")
-                  // O Trino dá-nos os nomes normalizados (minúsculas)
-                  // O DB2 espera maiúsculas (UPPER)
                   .append(schemaTableName.getSchemaName().toUpperCase())
                   .append(".")
                   .append(schemaTableName.getTableName().toUpperCase());
-        
+
+        if(!constraint.isAll() && !constraint.isNone()) {
+            Map<ColumnHandle, Domain> domains = constraint.getDomains().get();
+            List<String> predicates = new ArrayList<>();
+
+            for(Map.Entry<ColumnHandle, Domain> entry : domains.entrySet()) {
+                Db2ColumnHandle column = (Db2ColumnHandle) entry.getKey();
+                Domain domain = entry.getValue();
+
+                String predicate = buildPredicate(column, domain);
+                if(predicate != null) {
+                    predicates.add(predicate);
+                }
+            }
+
+            if(!predicates.isEmpty()) {
+                sqlBuilder.append(" WHERE ");
+                sqlBuilder.append(String.join(" AND ", predicates));
+            }
+        }
+
         return sqlBuilder.toString();
+    }
+
+    private String buildPredicate(Db2ColumnHandle column, Domain domain) {
+        String columnName = "\"" + column.getColumnName().toUpperCase() + "\"";
+        
+        if (domain.isNullAllowed() && domain.getValues().isNone()) {
+            return columnName + " IS NULL";
+        }
+        
+        if (domain.getValues().isNone()) {
+            return "1=0"; // Sempre falso
+        }
+        
+        if (domain.getValues().isAll()) {
+            return null; // Sem restrição
+        }
+        
+        Ranges ranges = domain.getValues().getRanges();
+        List<String> rangePredicates = new ArrayList<>();
+        
+        for (io.trino.spi.predicate.Range range : ranges.getOrderedRanges()) {
+            String rangePredicate = buildRangePredicate(columnName, range, column.getColumnType());
+            if (rangePredicate != null) {
+                rangePredicates.add(rangePredicate);
+            }
+        }
+        
+        if (rangePredicates.isEmpty()) {
+            return null;
+        }
+        
+        String result = rangePredicates.size() == 1
+                ? rangePredicates.get(0)
+                : "(" + String.join(" OR ", rangePredicates) + ")";
+        
+        if (domain.isNullAllowed()) {
+            result = "(" + result + " OR " + columnName + " IS NULL)";
+        }
+        
+        return result;
+    }
+
+    private String buildRangePredicate(String columnName, Range range, Type type) {
+        if (range.isSingleValue()) {
+            Object value = range.getSingleValue();
+            return columnName + " = " + formatValue(value, type);
+        }
+        
+        List<String> parts = new ArrayList<>();
+        
+        if (!range.isLowUnbounded()) {
+            String operator = range.isLowInclusive() ? ">=" : ">";
+            Object value = range.getLowBoundedValue();
+            parts.add(columnName + " " + operator + " " + formatValue(value, type));
+        }
+        
+        if (!range.isHighUnbounded()) {
+            String operator = range.isHighInclusive() ? "<=" : "<";
+            Object value = range.getHighBoundedValue();
+            parts.add(columnName + " " + operator + " " + formatValue(value, type));
+        }
+        
+        return parts.isEmpty() ? null : String.join(" AND ", parts);
+    }
+
+    private String formatValue(Object value, Type type) {
+        if (value == null) {
+            return "NULL";
+        }
+        
+        if (type instanceof VarcharType) {
+            Slice slice = (Slice) value;
+            String str = slice.toStringUtf8();
+            return "'" + str.replace("'", "''") + "'";
+        }
+        
+        if (type instanceof BigintType || type instanceof IntegerType || 
+            type instanceof SmallintType) {
+            return value.toString();
+        }
+        
+        if (type instanceof DoubleType || type instanceof RealType) {
+            return value.toString();
+        }
+        
+        if (type instanceof DateType) {
+            long days = (Long) value;
+            LocalDate date = LocalDate.ofEpochDay(days);
+            return "'" + date.toString() + "'";
+        }
+        
+        if (type instanceof TimestampType) {
+            long millis = (Long) value;
+            return "TIMESTAMP('" + new java.sql.Timestamp(millis).toString() + "')";
+        }
+        
+        // Fallback
+        return value.toString();
     }
 
     @Override
