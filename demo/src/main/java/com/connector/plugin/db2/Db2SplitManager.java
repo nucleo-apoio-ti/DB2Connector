@@ -25,7 +25,10 @@ public class Db2SplitManager implements ConnectorSplitManager {
 
         Db2Split split = new Db2Split(
             db2TableHandle.getSchemaTableName(),
-            db2TableHandle.getConstraint());
+            db2TableHandle.getConstraint(),
+            db2TableHandle.getLimit(),
+            db2TableHandle.getSortOrder()
+            );
 
         return new FixedSplitSource(List.of(split));
     }

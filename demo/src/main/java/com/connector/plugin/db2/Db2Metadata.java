@@ -22,7 +22,10 @@ import io.trino.spi.connector.ConnectorTableMetadata;
 import io.trino.spi.connector.ConnectorTableVersion;
 import io.trino.spi.connector.Constraint;
 import io.trino.spi.connector.ConstraintApplicationResult;
+import io.trino.spi.connector.LimitApplicationResult;
 import io.trino.spi.connector.SchemaTableName;
+import io.trino.spi.connector.SortItem;
+import io.trino.spi.connector.TopNApplicationResult;
 import io.trino.spi.predicate.TupleDomain;
 import io.trino.spi.type.BigintType;
 import io.trino.spi.type.DateType;
@@ -121,18 +124,82 @@ public Optional<ConstraintApplicationResult<ConnectorTableHandle>> applyFilter(
     // Cria um novo handle com os predicados
     Db2TableHandle newHandle = new Db2TableHandle(
         handle.getSchemaTableName(),
-        combinedDomain
+        combinedDomain,
+        handle.getLimit(),
+        handle.getSortOrder()
     );
-    
-    System.out.println("Retornando novo handle com constraint");
     
     return Optional.of(new ConstraintApplicationResult<>(
         newHandle,
         TupleDomain.all(), // Remaining constraint
         constraint.getExpression(),
         false // precalculateStatistics
-    ));
-}
+        ));
+    }
+
+    @Override
+    public Optional<LimitApplicationResult<ConnectorTableHandle>> applyLimit(
+                ConnectorSession session,
+                ConnectorTableHandle table,
+                long limit) {
+
+            Db2TableHandle handle = (Db2TableHandle) table;
+
+            if (handle.getLimit().isPresent() && handle.getLimit().get() <= limit) {
+                return Optional.empty();
+            }
+
+            Db2TableHandle newHandle = new Db2TableHandle(
+                handle.getSchemaTableName(),
+                handle.getConstraint(),
+                Optional.of(limit),
+                handle.getSortOrder()
+            );
+
+            return Optional.of(new LimitApplicationResult<>(newHandle, true, false));
+        }
+
+    @Override
+    public Optional<TopNApplicationResult<ConnectorTableHandle>> applyTopN(
+            ConnectorSession session,
+            ConnectorTableHandle table, 
+            long topNCount, 
+            List<SortItem> sortItems,
+            Map<String, ColumnHandle> assignments) {
+
+        Db2TableHandle handle = (Db2TableHandle) table;
+
+        if (handle.getLimit().isPresent() && 
+            handle.getLimit().get() <= topNCount &&
+            !handle.getSortOrder().isEmpty()) {
+            return Optional.empty(); 
+        }
+
+        List<SortItem> sortedColumnNames = new ArrayList<>();
+
+        for (SortItem item : sortItems) {
+            String symbol = item.getName();
+            
+            ColumnHandle columnHandle = assignments.get(symbol);
+            if (columnHandle == null){
+                return Optional.empty();
+            }
+            
+            Db2ColumnHandle db2Handle = (Db2ColumnHandle) columnHandle;
+            String actualColumnName = db2Handle.getColumnName();
+
+            sortedColumnNames.add(new SortItem(actualColumnName, item.getSortOrder()));
+        }
+
+        Db2TableHandle newHandle = new Db2TableHandle(
+            handle.getSchemaTableName(),
+            handle.getConstraint(),
+            Optional.of(topNCount),
+            sortedColumnNames
+            );
+        
+            return Optional.of(new TopNApplicationResult<>(newHandle,true , false));
+    }
 
     @Override
     public ConnectorTableHandle getTableHandle(ConnectorSession session, SchemaTableName tableName,
@@ -152,7 +219,7 @@ public Optional<ConstraintApplicationResult<ConnectorTableHandle>> applyFilter(
             
             try (ResultSet rs = statement.executeQuery()) {
                 if (rs.next()) {
-                    return new Db2TableHandle(tableName);
+                    return new Db2TableHandle(tableName, null, java.util.Optional.empty(), null);
                 }
             }
         } catch (SQLException e) {

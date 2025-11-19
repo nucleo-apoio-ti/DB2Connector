@@ -23,17 +23,23 @@ public class Db2RecordSetProvider implements ConnectorRecordSetProvider{
     }
 
     @Override
-    public RecordSet getRecordSet(ConnectorTransactionHandle transaction, ConnectorSession session, ConnectorSplit split, ConnectorTableHandle table, List<? extends ColumnHandle> columns) {
+    public RecordSet getRecordSet(
+        ConnectorTransactionHandle transaction,
+        ConnectorSession session,
+        ConnectorSplit split,
+        ConnectorTableHandle table,
+        List<? extends ColumnHandle> columns) {
         Db2Split db2Split = (Db2Split) split;
         SchemaTableName schemaTableName = db2Split.getSchemaTableName();
 
         ImmutableList.Builder<Db2ColumnHandle> columnHandles = ImmutableList.builder();
         for(ColumnHandle columnHandle : columns) {
-            columnHandles.add((Db2ColumnHandle) columnHandle);
+            if (columnHandle != null)
+                columnHandles.add((Db2ColumnHandle) columnHandle);
         }
         List<Db2ColumnHandle> db2Columns = columnHandles.build();
 
-        return new Db2RecordSet(connectionPool, schemaTableName, db2Columns, db2Split.getConstraint());
+        return new Db2RecordSet(connectionPool, schemaTableName, db2Columns, db2Split.getConstraint(), db2Split.getLimit(), db2Split.getSortOrder());
     }
     
 }

@@ -9,6 +9,7 @@ import java.time.LocalTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.stream.Collectors;
 
 import io.airlift.slice.Slice;
@@ -16,6 +17,7 @@ import io.airlift.slice.Slices;
 import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.connector.RecordCursor;
 import io.trino.spi.connector.SchemaTableName;
+import io.trino.spi.connector.SortItem;
 import io.trino.spi.predicate.Domain;
 import io.trino.spi.predicate.Range;
 import io.trino.spi.predicate.Ranges;
@@ -38,13 +40,21 @@ public class Db2RecordCursor implements RecordCursor{
     private final PreparedStatement statement;
     private final ResultSet resultSet;
     
-    public Db2RecordCursor(Db2ConnectionPool connectionPool, SchemaTableName schemaTableName, List<Db2ColumnHandle> columns, TupleDomain<ColumnHandle> constraint) {
+    public Db2RecordCursor(
+        Db2ConnectionPool connectionPool,
+        SchemaTableName schemaTableName, 
+        List<Db2ColumnHandle> columns,
+        TupleDomain<ColumnHandle> constraint,
+        Optional<Long> limit,
+        List<SortItem> sortOrder
+        ) {
+            
         this.columns = columns;
 
         try {
             this.connection = connectionPool.getConnection();
 
-            String sql = buildSql(schemaTableName, columns, constraint);
+            String sql = buildSql(schemaTableName, columns, constraint, limit, sortOrder);
             System.out.println("SQL GERADO: " + sql);
             
             this.statement = connection.prepareStatement(sql);
@@ -56,7 +66,13 @@ public class Db2RecordCursor implements RecordCursor{
         }
     }
 
-    private String buildSql(SchemaTableName schemaTableName, List<Db2ColumnHandle> columns, TupleDomain<ColumnHandle> constraint) {
+    private String buildSql(
+        SchemaTableName schemaTableName,
+        List<Db2ColumnHandle> columns,
+        TupleDomain<ColumnHandle> constraint,
+        Optional<Long> limit,
+        List<SortItem> sortOrder
+        ) {
         StringBuilder sqlBuilder = new StringBuilder("SELECT ");
 
         String columnNames = columns.stream()
@@ -91,6 +107,25 @@ public class Db2RecordCursor implements RecordCursor{
                 sqlBuilder.append(String.join(" AND ", predicates));
             }
         }
+        
+        if(!sortOrder.isEmpty()){
+                sqlBuilder.append(" ORDER BY ");
+                String sortClauses = sortOrder.stream()
+                    .map(sortItem -> {
+                    String colName = sortItem.getName().toUpperCase();
+                    String order = sortItem.getSortOrder().isAscending() ? "ASC" : "DESC";
+                    
+                    return "\"" + colName + "\" " + order;
+                })
+                .collect(Collectors.joining(", "));
+                sqlBuilder.append(sortClauses);
+            }
+
+            if(limit.isPresent()) {
+                sqlBuilder.append(" FETCH FIRST ")
+                    .append(limit.get())
+                    .append(" ROWS ONLY");
+            }
 
         return sqlBuilder.toString();
     }
