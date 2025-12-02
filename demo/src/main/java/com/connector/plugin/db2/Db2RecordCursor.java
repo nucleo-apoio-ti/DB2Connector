@@ -30,25 +30,26 @@ import io.trino.spi.type.RealType;
 import io.trino.spi.type.SmallintType;
 import io.trino.spi.type.TimeType;
 import io.trino.spi.type.TimestampType;
+import io.trino.spi.type.TimestampWithTimeZoneType;
 import io.trino.spi.type.Type;
+import io.trino.spi.type.DateTimeEncoding;
 import io.trino.spi.type.VarcharType;
 
-public class Db2RecordCursor implements RecordCursor{
+public class Db2RecordCursor implements RecordCursor {
 
     private final List<Db2ColumnHandle> columns;
     private final Connection connection;
     private final PreparedStatement statement;
     private final ResultSet resultSet;
-    
+
     public Db2RecordCursor(
-        Db2ConnectionPool connectionPool,
-        SchemaTableName schemaTableName, 
-        List<Db2ColumnHandle> columns,
-        TupleDomain<ColumnHandle> constraint,
-        Optional<Long> limit,
-        List<SortItem> sortOrder
-        ) {
-            
+            Db2ConnectionPool connectionPool,
+            SchemaTableName schemaTableName,
+            List<Db2ColumnHandle> columns,
+            TupleDomain<ColumnHandle> constraint,
+            Optional<Long> limit,
+            List<SortItem> sortOrder) {
+
         this.columns = columns;
 
         try {
@@ -56,7 +57,7 @@ public class Db2RecordCursor implements RecordCursor{
 
             String sql = buildSql(schemaTableName, columns, constraint, limit, sortOrder);
             System.out.println("SQL GERADO: " + sql);
-            
+
             this.statement = connection.prepareStatement(sql);
             this.resultSet = statement.executeQuery();
 
@@ -67,106 +68,105 @@ public class Db2RecordCursor implements RecordCursor{
     }
 
     private String buildSql(
-        SchemaTableName schemaTableName,
-        List<Db2ColumnHandle> columns,
-        TupleDomain<ColumnHandle> constraint,
-        Optional<Long> limit,
-        List<SortItem> sortOrder
-        ) {
+            SchemaTableName schemaTableName,
+            List<Db2ColumnHandle> columns,
+            TupleDomain<ColumnHandle> constraint,
+            Optional<Long> limit,
+            List<SortItem> sortOrder) {
         StringBuilder sqlBuilder = new StringBuilder("SELECT ");
 
         String columnNames = columns.stream()
-                .map(Db2ColumnHandle::getColumnName) 
+                .map(Db2ColumnHandle::getColumnName)
                 .map(String::toUpperCase)
                 .map(name -> "\"" + name + "\"")
                 .collect(Collectors.joining(", "));
-        
-        sqlBuilder.append(columnNames);
-        
-        sqlBuilder.append(" FROM ")
-                  .append(schemaTableName.getSchemaName().toUpperCase())
-                  .append(".")
-                  .append(schemaTableName.getTableName().toUpperCase());
 
-        if(!constraint.isAll() && !constraint.isNone()) {
+        sqlBuilder.append(columnNames);
+
+        sqlBuilder.append(" FROM ")
+                .append(schemaTableName.getSchemaName().toUpperCase())
+                .append(".")
+                .append(schemaTableName.getTableName().toUpperCase());
+
+        if (!constraint.isAll() && !constraint.isNone()) {
             Map<ColumnHandle, Domain> domains = constraint.getDomains().get();
             List<String> predicates = new ArrayList<>();
 
-            for(Map.Entry<ColumnHandle, Domain> entry : domains.entrySet()) {
+            for (Map.Entry<ColumnHandle, Domain> entry : domains.entrySet()) {
                 Db2ColumnHandle column = (Db2ColumnHandle) entry.getKey();
                 Domain domain = entry.getValue();
 
                 String predicate = buildPredicate(column, domain);
-                if(predicate != null) {
+                if (predicate != null) {
                     predicates.add(predicate);
                 }
             }
 
-            if(!predicates.isEmpty()) {
+            if (!predicates.isEmpty()) {
                 sqlBuilder.append(" WHERE ");
                 sqlBuilder.append(String.join(" AND ", predicates));
             }
         }
-        
-        if(!sortOrder.isEmpty()){
-                sqlBuilder.append(" ORDER BY ");
-                String sortClauses = sortOrder.stream()
-                    .map(sortItem -> {
-                    String colName = sortItem.getName().toUpperCase();
-                    String order = sortItem.getSortOrder().isAscending() ? "ASC" : "DESC";
-                    
-                    return "\"" + colName + "\" " + order;
-                })
-                .collect(Collectors.joining(", "));
-                sqlBuilder.append(sortClauses);
-            }
 
-            if(limit.isPresent()) {
-                sqlBuilder.append(" FETCH FIRST ")
+        if (!sortOrder.isEmpty()) {
+            sqlBuilder.append(" ORDER BY ");
+            String sortClauses = sortOrder.stream()
+                    .map(sortItem -> {
+                        String colName = sortItem.getName().toUpperCase();
+                        String order = sortItem.getSortOrder().isAscending() ? "ASC" : "DESC";
+
+                        return "\"" + colName + "\" " + order;
+                    })
+                    .collect(Collectors.joining(", "));
+            sqlBuilder.append(sortClauses);
+        }
+
+        if (limit.isPresent()) {
+            sqlBuilder.append(" FETCH FIRST ")
                     .append(limit.get())
                     .append(" ROWS ONLY");
-            }
+        }
 
         return sqlBuilder.toString();
     }
 
     private String buildPredicate(Db2ColumnHandle column, Domain domain) {
         String columnName = "\"" + column.getColumnName().toUpperCase() + "\"";
-        
+
         if (domain.isNullAllowed() && domain.getValues().isNone()) {
             return columnName + " IS NULL";
         }
-        
+
         if (domain.getValues().isNone()) {
             return "1=0"; // Sempre falso
         }
-        
+
         if (domain.getValues().isAll()) {
             return null; // Sem restrição
         }
-        
+
         Ranges ranges = domain.getValues().getRanges();
         List<String> rangePredicates = new ArrayList<>();
-        
+
         for (io.trino.spi.predicate.Range range : ranges.getOrderedRanges()) {
             String rangePredicate = buildRangePredicate(columnName, range, column.getColumnType());
             if (rangePredicate != null) {
                 rangePredicates.add(rangePredicate);
             }
         }
-        
+
         if (rangePredicates.isEmpty()) {
             return null;
         }
-        
+
         String result = rangePredicates.size() == 1
                 ? rangePredicates.get(0)
                 : "(" + String.join(" OR ", rangePredicates) + ")";
-        
+
         if (domain.isNullAllowed()) {
             result = "(" + result + " OR " + columnName + " IS NULL)";
         }
-        
+
         return result;
     }
 
@@ -175,21 +175,21 @@ public class Db2RecordCursor implements RecordCursor{
             Object value = range.getSingleValue();
             return columnName + " = " + formatValue(value, type);
         }
-        
+
         List<String> parts = new ArrayList<>();
-        
+
         if (!range.isLowUnbounded()) {
             String operator = range.isLowInclusive() ? ">=" : ">";
             Object value = range.getLowBoundedValue();
             parts.add(columnName + " " + operator + " " + formatValue(value, type));
         }
-        
+
         if (!range.isHighUnbounded()) {
             String operator = range.isHighInclusive() ? "<=" : "<";
             Object value = range.getHighBoundedValue();
             parts.add(columnName + " " + operator + " " + formatValue(value, type));
         }
-        
+
         return parts.isEmpty() ? null : String.join(" AND ", parts);
     }
 
@@ -197,40 +197,46 @@ public class Db2RecordCursor implements RecordCursor{
         if (value == null) {
             return "NULL";
         }
-        
+
         if (type instanceof VarcharType) {
             Slice slice = (Slice) value;
             String str = slice.toStringUtf8();
             return "'" + str.replace("'", "''") + "'";
         }
-        
-        if (type instanceof BigintType || type instanceof IntegerType || 
-            type instanceof SmallintType) {
+
+        if (type instanceof BigintType || type instanceof IntegerType ||
+                type instanceof SmallintType) {
             return value.toString();
         }
-        
+
         if (type instanceof DoubleType || type instanceof RealType) {
             return value.toString();
         }
-        
+
         if (type instanceof DateType) {
             long days = (Long) value;
             LocalDate date = LocalDate.ofEpochDay(days);
             return "'" + date.toString() + "'";
         }
-        
+
         if (type instanceof TimestampType) {
-            long millis = (Long) value;
+            long micros = (Long) value;
+            long millis = micros / 1000;
             return "TIMESTAMP('" + new java.sql.Timestamp(millis).toString() + "')";
         }
-        
+
+        if (type instanceof TimestampWithTimeZoneType) {
+            // Simplification for display/predicate purposes
+            return "TIMESTAMP WITH TIME ZONE '" + value.toString() + "'";
+        }
+
         // Fallback
         return value.toString();
     }
 
     @Override
     public long getCompletedBytes() {
-        return 0; 
+        return 0;
     }
 
     @Override
@@ -255,12 +261,30 @@ public class Db2RecordCursor implements RecordCursor{
     @Override
     public long getLong(int field) {
         try {
-            return resultSet.getLong(field + 1);
+            Type type = getType(field);
+
+        if (type instanceof TimestampType) {
+            java.sql.Timestamp ts = resultSet.getTimestamp(field + 1);
+            long micros = (ts.getTime() * 1000) + (ts.getNanos() / 1000) % 1000;
+            return micros;
+        }
+
+        if (type instanceof DateType) {
+            java.sql.Date date = resultSet.getDate(field + 1);
+            return date.toLocalDate().toEpochDay();
+        }
+
+        if (type instanceof TimeType) {
+            java.sql.Time time = resultSet.getTime(field + 1);
+            return time.toLocalTime().toNanoOfDay() * 1000; 
+        }
+
+        return resultSet.getLong(field + 1);
         } catch (SQLException e) {
             throw new RuntimeException("Erro ao ler o campo long (índice " + field + ")", e);
         }
     }
-    
+
     @Override
     public boolean getBoolean(int field) {
         try {
@@ -304,7 +328,7 @@ public class Db2RecordCursor implements RecordCursor{
     public Object getObject(int field) {
         try {
             Type type = getType(field);
-                        
+
             if (type.equals(IntegerType.INTEGER) || type.equals(SmallintType.SMALLINT)) {
                 return resultSet.getInt(field + 1);
             }
@@ -325,8 +349,13 @@ public class Db2RecordCursor implements RecordCursor{
                 LocalTime time = resultSet.getObject(field + 1, LocalTime.class);
                 return (time == null) ? null : time.toNanoOfDay() * 1000;
             }
-            if (type.equals(TimestampType.TIMESTAMP_MILLIS)) {
-                return resultSet.getTimestamp(field + 1).getTime();
+            if (type.equals(TimestampType.TIMESTAMP_MICROS)) {
+                java.sql.Timestamp ts = resultSet.getTimestamp(field + 1);
+                if (ts == null) {{
+                    return null;
+                }
+                long micros = (ts.getTime() * 1000) + (ts.getNanos() / 1000) % 1000;
+                return micros;
             }
 
             // Fallback
