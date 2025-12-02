@@ -32,7 +32,6 @@ import io.trino.spi.type.TimeType;
 import io.trino.spi.type.TimestampType;
 import io.trino.spi.type.TimestampWithTimeZoneType;
 import io.trino.spi.type.Type;
-import io.trino.spi.type.DateTimeEncoding;
 import io.trino.spi.type.VarcharType;
 
 public class Db2RecordCursor implements RecordCursor {
@@ -351,7 +350,7 @@ public class Db2RecordCursor implements RecordCursor {
             }
             if (type.equals(TimestampType.TIMESTAMP_MICROS)) {
                 java.sql.Timestamp ts = resultSet.getTimestamp(field + 1);
-                if (ts == null) {{
+                if (ts == null) {
                     return null;
                 }
                 long micros = (ts.getTime() * 1000) + (ts.getNanos() / 1000) % 1000;
