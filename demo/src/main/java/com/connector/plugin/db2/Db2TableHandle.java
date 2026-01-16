@@ -19,18 +19,25 @@ public class Db2TableHandle implements ConnectorTableHandle {
     private final TupleDomain<ColumnHandle> constraint;
     private final Optional<Long> limit;
     private final List<SortItem> sortOrder;
+    private final boolean isDistinct;
+    private final Optional<String> sqlQuery;
 
     @JsonCreator
     public Db2TableHandle(
         @JsonProperty("schemaTableName") SchemaTableName schemaTableName,
         @JsonProperty("constraint") TupleDomain<ColumnHandle> constraint,
         @JsonProperty("limit") Optional<Long> limit,
-        @JsonProperty("sortOrder") List<SortItem> sortOrder
+        @JsonProperty("sortOrder") List<SortItem> sortOrder,
+        @JsonProperty("isDistinct") boolean isDistinct,
+        @JsonProperty("sqlQuery") String sqlQuery
         ) {
         this.schemaTableName = schemaTableName;
         this.constraint = constraint != null ? constraint : TupleDomain.all();
         this.sortOrder = sortOrder != null ? List.copyOf(sortOrder) : List.of();
         this.limit = limit != null ? limit : Optional.empty();
+        this.isDistinct = isDistinct;
+        this.sqlQuery = Optional.ofNullable(sqlQuery);
+
     }
 
     // For simples querys(Select * from Table;)
@@ -54,8 +61,17 @@ public class Db2TableHandle implements ConnectorTableHandle {
     }
 
     @JsonProperty
+    public boolean isDistinct() {
+        return isDistinct;
+    }
+
     public List<SortItem> getSortOrder() {
         return sortOrder;
+    }
+
+    @JsonProperty("sqlQuery")
+    public String getSqlQueryAsString() {
+        return this.sqlQuery.orElse(null);
     }
 
     @Override
@@ -66,11 +82,13 @@ public class Db2TableHandle implements ConnectorTableHandle {
         return Objects.equals(schemaTableName, that.schemaTableName) &&
                Objects.equals(constraint, that.constraint) &&
                Objects.equals(sortOrder, that.sortOrder) &&
-               Objects.equals(limit, that.limit);
+               Objects.equals(limit, that.limit) &&
+               isDistinct == that.isDistinct &&
+               Objects.equals(sqlQuery, that.sqlQuery);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(schemaTableName, constraint, limit, sortOrder);
+        return Objects.hash(schemaTableName, constraint, limit, sortOrder, isDistinct, sqlQuery);
     }
 }

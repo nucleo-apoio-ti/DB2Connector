@@ -37,7 +37,14 @@ import io.trino.spi.type.TimeType;
 import io.trino.spi.type.TimestampType;
 import io.trino.spi.type.TimestampWithTimeZoneType;
 import io.trino.spi.type.Type;
+import io.trino.spi.connector.AggregateFunction;
+import io.trino.spi.connector.AggregationApplicationResult;
+import io.trino.spi.connector.JoinApplicationResult;
+import io.trino.spi.connector.JoinType;
+import io.trino.spi.expression.ConnectorExpression;
+import io.trino.spi.expression.Variable;
 import io.trino.spi.type.VarcharType;
+import io.trino.spi.expression.Call;
 
 public class Db2Metadata implements ConnectorMetadata {
 
@@ -128,7 +135,9 @@ public class Db2Metadata implements ConnectorMetadata {
                 handle.getSchemaTableName(),
                 combinedDomain,
                 handle.getLimit(),
-                handle.getSortOrder());
+                handle.getSortOrder(),
+                handle.isDistinct(),
+                handle.getSqlQueryAsString());
 
         return Optional.of(new ConstraintApplicationResult<>(
                 newHandle,
@@ -154,7 +163,9 @@ public class Db2Metadata implements ConnectorMetadata {
                 handle.getSchemaTableName(),
                 handle.getConstraint(),
                 Optional.of(limit),
-                handle.getSortOrder());
+                handle.getSortOrder(),
+                handle.isDistinct(),
+                handle.getSqlQueryAsString());
 
         return Optional.of(new LimitApplicationResult<>(newHandle, true, false));
     }
@@ -195,7 +206,9 @@ public class Db2Metadata implements ConnectorMetadata {
                 handle.getSchemaTableName(),
                 handle.getConstraint(),
                 Optional.of(topNCount),
-                sortedColumnNames);
+                sortedColumnNames,
+                handle.isDistinct(),
+                handle.getSqlQueryAsString());
 
         return Optional.of(new TopNApplicationResult<>(newHandle, true, false));
     }
@@ -219,7 +232,7 @@ public class Db2Metadata implements ConnectorMetadata {
 
             try (ResultSet rs = statement.executeQuery()) {
                 if (rs.next()) {
-                    return new Db2TableHandle(tableName, null, java.util.Optional.empty(), null);
+                    return new Db2TableHandle(tableName, null, java.util.Optional.empty(), null, false, null);
                 }
             }
         } catch (SQLException e) {
@@ -229,6 +242,187 @@ public class Db2Metadata implements ConnectorMetadata {
                     e);
         }
         return null;
+    }
+
+    @Override
+    public Optional<AggregationApplicationResult<ConnectorTableHandle>> applyAggregation(
+            ConnectorSession session,
+            ConnectorTableHandle table,
+            List<AggregateFunction> aggregates,
+            Map<String, ColumnHandle> assignments,
+            List<List<ColumnHandle>> groupingSets) {
+
+        Db2TableHandle handle = (Db2TableHandle) table;
+
+        if (!aggregates.isEmpty()) {
+            return Optional.empty();
+        }
+
+        if (groupingSets.size() != 1) {
+            return Optional.empty();
+        }
+
+        Db2TableHandle newHandle = new Db2TableHandle(
+                handle.getSchemaTableName(),
+                handle.getConstraint(),
+                handle.getLimit(),
+                handle.getSortOrder(),
+                true, // isDistinct
+                handle.getSqlQueryAsString());
+
+        Map<ColumnHandle, ColumnHandle> groupingMappings = new HashMap<>();
+        for (ColumnHandle h : assignments.values()) {
+            groupingMappings.put(h, h);
+        }
+
+        return Optional.of(new AggregationApplicationResult<>(
+                newHandle,
+                List.of(),
+                List.of(),
+                groupingMappings,
+                false));
+    }
+
+    @Override
+    public Optional<JoinApplicationResult<ConnectorTableHandle>> applyJoin(
+            ConnectorSession session,
+            JoinType joinType,
+            ConnectorTableHandle left,
+            ConnectorTableHandle right,
+            ConnectorExpression joinCondition,
+            Map<String, ColumnHandle> leftAssignments,
+            Map<String, ColumnHandle> rightAssignments,
+            io.trino.spi.connector.JoinStatistics statistics) {
+
+        Db2TableHandle leftHandle = (Db2TableHandle) left;
+        Db2TableHandle rightHandle = (Db2TableHandle) right;
+
+        Map<ColumnHandle, ColumnHandle> leftColumnHandles = new HashMap<>();
+        Map<ColumnHandle, ColumnHandle> rightColumnHandles = new HashMap<>();
+
+        String leftSql = leftHandle.getSqlQueryAsString();
+        if (leftSql == null) {
+            leftSql = leftHandle.getSchemaTableName().getSchemaName() + "."
+                    + leftHandle.getSchemaTableName().getTableName();
+        } else {
+            leftSql = "(" + leftSql + ")";
+        }
+
+        String rightSql = rightHandle.getSqlQueryAsString();
+        if (rightSql == null) {
+            rightSql = rightHandle.getSchemaTableName().getSchemaName() + "."
+                    + rightHandle.getSchemaTableName().getTableName();
+        } else {
+            rightSql = "(" + rightSql + ")";
+        }
+
+        String joinTypeStr = "INNER JOIN";
+        if (joinType == JoinType.LEFT_OUTER) {
+            joinTypeStr = "LEFT JOIN";
+        } else if (joinType == JoinType.RIGHT_OUTER) {
+            joinTypeStr = "RIGHT JOIN";
+        } else if (joinType == JoinType.FULL_OUTER) {
+            joinTypeStr = "FULL JOIN";
+        }
+
+        StringBuilder sql = new StringBuilder();
+
+        List<String> selectColumns = new ArrayList<>();
+        int counter = 0;
+
+        // Process Left Assignments
+        for (ColumnHandle handle : leftAssignments.values()) {
+            Db2ColumnHandle oldHandle = (Db2ColumnHandle) handle;
+            if (leftColumnHandles.containsKey(oldHandle)) {
+                continue;
+            }
+
+            // Create unique alias to avoid collisions
+            String alias = "l_" + counter + "_" + oldHandle.getColumnName();
+            counter++;
+
+            selectColumns.add("L." + oldHandle.getColumnName() + " AS " + alias);
+
+            Db2ColumnHandle newHandle = new Db2ColumnHandle(alias, oldHandle.getColumnType());
+            // Map Old Handle -> New Handle
+            leftColumnHandles.put(oldHandle, newHandle);
+        }
+
+        // Process Right Assignments
+        for (ColumnHandle handle : rightAssignments.values()) {
+            Db2ColumnHandle oldHandle = (Db2ColumnHandle) handle;
+            if (rightColumnHandles.containsKey(oldHandle)) {
+                continue;
+            }
+
+            // Create unique alias to avoid collisions
+            String alias = "r_" + counter + "_" + oldHandle.getColumnName();
+            counter++;
+
+            selectColumns.add("R." + oldHandle.getColumnName() + " AS " + alias);
+
+            Db2ColumnHandle newHandle = new Db2ColumnHandle(alias, oldHandle.getColumnType());
+            // Map Old Handle -> New Handle
+            rightColumnHandles.put(oldHandle, newHandle);
+        }
+
+        sql.append("SELECT ").append(String.join(", ", selectColumns)).append(" FROM ");
+
+        String conditionSql = "1=1";
+        if (joinCondition instanceof io.trino.spi.expression.Call) {
+            conditionSql = renderExpression(joinCondition, leftAssignments, rightAssignments);
+        }
+
+        sql.append(leftSql).append(" AS L ");
+        sql.append(joinTypeStr).append(" ");
+        sql.append(rightSql).append(" AS R ");
+        sql.append(" ON ").append(conditionSql);
+
+        Db2TableHandle newHandle = new Db2TableHandle(
+                new SchemaTableName("derived", "join_result"),
+                TupleDomain.all(),
+                Optional.empty(),
+                List.of(),
+                false,
+                sql.toString());
+
+        return Optional.of(new JoinApplicationResult<ConnectorTableHandle>(
+                newHandle,
+                leftColumnHandles,
+                rightColumnHandles,
+                false));
+    }
+
+    private String renderExpression(ConnectorExpression expression,
+            Map<String, ColumnHandle> leftAssignments,
+            Map<String, ColumnHandle> rightAssignments) {
+        if (expression instanceof Variable) {
+            String name = ((Variable) expression).getName();
+            if (leftAssignments.containsKey(name)) {
+                Db2ColumnHandle h = (Db2ColumnHandle) leftAssignments.get(name);
+                return "L." + h.getColumnName();
+            }
+            if (rightAssignments.containsKey(name)) {
+                Db2ColumnHandle h = (Db2ColumnHandle) rightAssignments.get(name);
+                return "R." + h.getColumnName();
+            }
+            // Should not happen if logic is correct
+            return name;
+        }
+        if (expression instanceof Call) {
+            Call call = (Call) expression;
+            String op = call.getFunctionName().getName();
+            if (op.equals("equal")) {
+                return renderExpression(call.getArguments().get(0), leftAssignments, rightAssignments) + " = "
+                        + renderExpression(call.getArguments().get(1), leftAssignments, rightAssignments);
+            }
+            if (op.equals("and")) {
+                return "(" + renderExpression(call.getArguments().get(0), leftAssignments, rightAssignments) + " AND "
+                        + renderExpression(call.getArguments().get(1), leftAssignments, rightAssignments) + ")";
+            }
+        }
+        // Fallback
+        return "1=1";
     }
 
     @Override

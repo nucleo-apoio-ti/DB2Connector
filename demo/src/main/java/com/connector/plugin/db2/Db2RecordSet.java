@@ -12,7 +12,7 @@ import io.trino.spi.connector.SortItem;
 import io.trino.spi.predicate.TupleDomain;
 import io.trino.spi.type.Type;
 
-public class Db2RecordSet implements RecordSet{
+public class Db2RecordSet implements RecordSet {
 
     private final Db2ConnectionPool connectionPool;
     private final SchemaTableName schemaTableName;
@@ -21,15 +21,18 @@ public class Db2RecordSet implements RecordSet{
     private final TupleDomain<ColumnHandle> constraint;
     private final Optional<Long> limit;
     private final List<SortItem> sortOrder;
+    private final boolean isDistinct;
+    private final String sqlQuery;
 
     public Db2RecordSet(
-        Db2ConnectionPool connectionPool,
-        SchemaTableName schemaTableName,
-        List<Db2ColumnHandle> columns,
-        TupleDomain<ColumnHandle> constraint,
-        Optional<Long> limit,
-        List<SortItem> sortOrder
-        ) {
+            Db2ConnectionPool connectionPool,
+            SchemaTableName schemaTableName,
+            List<Db2ColumnHandle> columns,
+            TupleDomain<ColumnHandle> constraint,
+            Optional<Long> limit,
+            List<SortItem> sortOrder,
+            boolean isDistinct,
+            String sqlQuery) {
         this.connectionPool = connectionPool;
         this.schemaTableName = schemaTableName;
         this.columns = columns;
@@ -37,6 +40,8 @@ public class Db2RecordSet implements RecordSet{
         this.constraint = constraint;
         this.limit = limit;
         this.sortOrder = sortOrder;
+        this.isDistinct = isDistinct;
+        this.sqlQuery = sqlQuery;
     }
 
     @Override
@@ -46,6 +51,7 @@ public class Db2RecordSet implements RecordSet{
 
     @Override
     public RecordCursor cursor() {
-        return new Db2RecordCursor(connectionPool, schemaTableName, columns, constraint, limit, sortOrder);
+        return new Db2RecordCursor(connectionPool, schemaTableName, columns, constraint, limit, sortOrder, isDistinct,
+                sqlQuery);
     }
 }

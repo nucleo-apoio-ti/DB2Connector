@@ -41,15 +41,22 @@ public class Db2RecordCursor implements RecordCursor {
     private final PreparedStatement statement;
     private final ResultSet resultSet;
 
+    private final boolean isDistinct;
+    private final String sqlQuery;
+
     public Db2RecordCursor(
             Db2ConnectionPool connectionPool,
             SchemaTableName schemaTableName,
             List<Db2ColumnHandle> columns,
             TupleDomain<ColumnHandle> constraint,
             Optional<Long> limit,
-            List<SortItem> sortOrder) {
+            List<SortItem> sortOrder,
+            boolean isDistinct,
+            String sqlQuery) {
 
         this.columns = columns;
+        this.isDistinct = isDistinct;
+        this.sqlQuery = sqlQuery;
 
         try {
             this.connection = connectionPool.getConnection();
@@ -74,6 +81,10 @@ public class Db2RecordCursor implements RecordCursor {
             List<SortItem> sortOrder) {
         StringBuilder sqlBuilder = new StringBuilder("SELECT ");
 
+        if (isDistinct) {
+            sqlBuilder.append("DISTINCT ");
+        }
+
         String columnNames = columns.stream()
                 .map(Db2ColumnHandle::getColumnName)
                 .map(String::toUpperCase)
@@ -82,10 +93,15 @@ public class Db2RecordCursor implements RecordCursor {
 
         sqlBuilder.append(columnNames);
 
-        sqlBuilder.append(" FROM ")
-                .append(schemaTableName.getSchemaName().toUpperCase())
-                .append(".")
-                .append(schemaTableName.getTableName().toUpperCase());
+        sqlBuilder.append(" FROM ");
+
+        if (sqlQuery != null && !sqlQuery.isEmpty()) {
+            sqlBuilder.append("(" + sqlQuery + ") AS T ");
+        } else {
+            sqlBuilder.append(schemaTableName.getSchemaName().toUpperCase())
+                    .append(".")
+                    .append(schemaTableName.getTableName().toUpperCase());
+        }
 
         if (!constraint.isAll() && !constraint.isNone()) {
             Map<ColumnHandle, Domain> domains = constraint.getDomains().get();
@@ -262,23 +278,23 @@ public class Db2RecordCursor implements RecordCursor {
         try {
             Type type = getType(field);
 
-        if (type instanceof TimestampType) {
-            java.sql.Timestamp ts = resultSet.getTimestamp(field + 1);
-            long micros = (ts.getTime() * 1000) + (ts.getNanos() / 1000) % 1000;
-            return micros;
-        }
+            if (type instanceof TimestampType) {
+                java.sql.Timestamp ts = resultSet.getTimestamp(field + 1);
+                long micros = (ts.getTime() * 1000) + (ts.getNanos() / 1000) % 1000;
+                return micros;
+            }
 
-        if (type instanceof DateType) {
-            java.sql.Date date = resultSet.getDate(field + 1);
-            return date.toLocalDate().toEpochDay();
-        }
+            if (type instanceof DateType) {
+                java.sql.Date date = resultSet.getDate(field + 1);
+                return date.toLocalDate().toEpochDay();
+            }
 
-        if (type instanceof TimeType) {
-            java.sql.Time time = resultSet.getTime(field + 1);
-            return time.toLocalTime().toNanoOfDay() * 1000; 
-        }
+            if (type instanceof TimeType) {
+                java.sql.Time time = resultSet.getTime(field + 1);
+                return time.toLocalTime().toNanoOfDay() * 1000;
+            }
 
-        return resultSet.getLong(field + 1);
+            return resultSet.getLong(field + 1);
         } catch (SQLException e) {
             throw new RuntimeException("Erro ao ler o campo long (índice " + field + ")", e);
         }

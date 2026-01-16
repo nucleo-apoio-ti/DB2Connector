@@ -5,7 +5,6 @@
 *.class
 
 # Java bytecode
-*.jar
 *.war
 *.ear
 
