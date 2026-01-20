@@ -11,8 +11,12 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
+import com.google.common.collect.ImmutableList;
+
 import io.trino.spi.StandardErrorCode;
 import io.trino.spi.TrinoException;
+import io.trino.spi.connector.AggregateFunction;
+import io.trino.spi.connector.AggregationApplicationResult;
 import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.connector.ColumnMetadata;
 import io.trino.spi.connector.ConnectorMetadata;
@@ -22,10 +26,15 @@ import io.trino.spi.connector.ConnectorTableMetadata;
 import io.trino.spi.connector.ConnectorTableVersion;
 import io.trino.spi.connector.Constraint;
 import io.trino.spi.connector.ConstraintApplicationResult;
+import io.trino.spi.connector.JoinApplicationResult;
+import io.trino.spi.connector.JoinType;
 import io.trino.spi.connector.LimitApplicationResult;
 import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.connector.SortItem;
 import io.trino.spi.connector.TopNApplicationResult;
+import io.trino.spi.expression.Call;
+import io.trino.spi.expression.ConnectorExpression;
+import io.trino.spi.expression.Variable;
 import io.trino.spi.predicate.TupleDomain;
 import io.trino.spi.type.BigintType;
 import io.trino.spi.type.DateType;
@@ -37,14 +46,7 @@ import io.trino.spi.type.TimeType;
 import io.trino.spi.type.TimestampType;
 import io.trino.spi.type.TimestampWithTimeZoneType;
 import io.trino.spi.type.Type;
-import io.trino.spi.connector.AggregateFunction;
-import io.trino.spi.connector.AggregationApplicationResult;
-import io.trino.spi.connector.JoinApplicationResult;
-import io.trino.spi.connector.JoinType;
-import io.trino.spi.expression.ConnectorExpression;
-import io.trino.spi.expression.Variable;
 import io.trino.spi.type.VarcharType;
-import io.trino.spi.expression.Call;
 
 public class Db2Metadata implements ConnectorMetadata {
 
@@ -254,33 +256,96 @@ public class Db2Metadata implements ConnectorMetadata {
 
         Db2TableHandle handle = (Db2TableHandle) table;
 
-        if (!aggregates.isEmpty()) {
-            return Optional.empty();
-        }
-
         if (groupingSets.size() != 1) {
             return Optional.empty();
         }
+        
+        List<ColumnHandle> groupByColumns = groupingSets.get(0);
 
-        Db2TableHandle newHandle = new Db2TableHandle(
-                handle.getSchemaTableName(),
-                handle.getConstraint(),
-                handle.getLimit(),
-                handle.getSortOrder(),
-                true, // isDistinct
-                handle.getSqlQueryAsString());
-
-        Map<ColumnHandle, ColumnHandle> groupingMappings = new HashMap<>();
-        for (ColumnHandle h : assignments.values()) {
-            groupingMappings.put(h, h);
+        for (AggregateFunction aggregation : aggregates) {
+            String functionName = aggregation.getFunctionName();
+            if (!isSupportedAggregation(functionName)) {
+                return Optional.empty(); // Se uma falhar, aborta pushdown.
+            }
         }
 
-        return Optional.of(new AggregationApplicationResult<>(
-                newHandle,
+        ImmutableList.Builder<ColumnHandle> newColumns = ImmutableList.builder();
+        Map<ColumnHandle, ColumnHandle> assignmentsMap = new HashMap<>();
+        
+        List<String> selectList = new ArrayList<>();
+        List<String> groupByList = new ArrayList<>();
+
+        for (ColumnHandle groupCol : groupByColumns) {
+            Db2ColumnHandle db2Col = (Db2ColumnHandle) groupCol;
+            
+            selectList.add("\"" + db2Col.getColumnName().toUpperCase() + "\"");
+            groupByList.add("\"" + db2Col.getColumnName().toUpperCase() + "\"");
+            
+            assignmentsMap.put(groupCol, groupCol);
+        }
+
+        List<ColumnHandle> aggregateHandles = new ArrayList<>();
+        int aggIndex = 0;
+        
+        for (AggregateFunction aggregation : aggregates) {
+            String functionName = aggregation.getFunctionName();
+            
+            String argExpression = "*";
+            if (!aggregation.getArguments().isEmpty()) {
+                ConnectorExpression arg = aggregation.getArguments().get(0);
+                if (arg instanceof Variable) {
+                    String varName = ((Variable) arg).getName();
+                    Db2ColumnHandle colHandle = (Db2ColumnHandle) assignments.get(varName);
+                    argExpression = "\"" + colHandle.getColumnName().toUpperCase() + "\"";
+                }
+            }
+
+            String sqlExpression = functionName.toUpperCase() + "(" + argExpression + ")";
+            
+            String alias = "agg_" + aggIndex++;
+            selectList.add(sqlExpression + " AS \"" + alias + "\"");
+
+            // Cria o Handle para o Trino entender essa nova coluna calculada
+            Db2ColumnHandle newHandle = new Db2ColumnHandle(alias, aggregation.getOutputType());
+            aggregateHandles.add(newHandle);
+        }
+
+        String sourceSql = handle.getSqlQueryAsString();
+        if (sourceSql == null) {
+            sourceSql = handle.getSchemaTableName().getSchemaName() + "." + handle.getSchemaTableName().getTableName();
+        } else {
+            sourceSql = "(" + sourceSql + ")";
+        }
+
+        StringBuilder sql = new StringBuilder();
+        sql.append("SELECT ").append(String.join(", ", selectList));
+        sql.append(" FROM ").append(sourceSql).append(" AS T_AGG");
+        
+        if (!groupByList.isEmpty()) {
+            sql.append(" GROUP BY ").append(String.join(", ", groupByList));
+        }
+
+        Db2TableHandle newTableHandle = new Db2TableHandle(
+                handle.getSchemaTableName(),
+                TupleDomain.all(),
+                Optional.empty(),
                 List.of(),
-                List.of(),
-                groupingMappings,
-                false));
+                false,
+                sql.toString()
+        );
+
+        return Optional.of(new AggregationApplicationResult<ConnectorTableHandle>(
+                newTableHandle,
+                assignmentsMap,
+                aggregateHandles,
+                assignmentsMap,
+                false
+        ));
+    }
+
+    // Helper simples para validar funções
+    private boolean isSupportedAggregation(String name) {
+        return List.of("count", "sum", "min", "max", "avg").contains(name.toLowerCase());
     }
 
     @Override
