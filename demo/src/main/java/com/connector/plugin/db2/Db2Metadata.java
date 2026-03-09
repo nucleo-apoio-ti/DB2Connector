@@ -256,63 +256,115 @@ public class Db2Metadata implements ConnectorMetadata {
 
         Db2TableHandle handle = (Db2TableHandle) table;
 
+        // Suporta apenas um grouping set (GROUP BY simples)
         if (groupingSets.size() != 1) {
             return Optional.empty();
         }
-        
+
         List<ColumnHandle> groupByColumns = groupingSets.get(0);
 
+        // Valida se as funções de agregação são suportadas
         for (AggregateFunction aggregation : aggregates) {
             String functionName = aggregation.getFunctionName();
             if (!isSupportedAggregation(functionName)) {
-                return Optional.empty(); // Se uma falhar, aborta pushdown.
+                return Optional.empty();
             }
         }
 
-        ImmutableList.Builder<ColumnHandle> newColumns = ImmutableList.builder();
-        Map<ColumnHandle, ColumnHandle> assignmentsMap = new HashMap<>();
-        
         List<String> selectList = new ArrayList<>();
         List<String> groupByList = new ArrayList<>();
 
+        // Listas para o resultado do Trino
+        List<ConnectorExpression> projections = new ArrayList<>();
+        List<io.trino.spi.connector.Assignment> assignmentsList = new ArrayList<>();
+        Map<ColumnHandle, ColumnHandle> groupingColumnMapping = new HashMap<>();
+
+        Processar Colunas de Agrupamento
         for (ColumnHandle groupCol : groupByColumns) {
             Db2ColumnHandle db2Col = (Db2ColumnHandle) groupCol;
-            
+
+            // Adiciona ao SQL
             selectList.add("\"" + db2Col.getColumnName().toUpperCase() + "\"");
             groupByList.add("\"" + db2Col.getColumnName().toUpperCase() + "\"");
-            
-            assignmentsMap.put(groupCol, groupCol);
+
+            // Mapeia a coluna original para ela mesma (identity mapping)
+            groupingColumnMapping.put(groupCol, groupCol);
         }
 
-        List<ColumnHandle> aggregateHandles = new ArrayList<>();
+        // Processar Funções de Agregação
         int aggIndex = 0;
-        
         for (AggregateFunction aggregation : aggregates) {
             String functionName = aggregation.getFunctionName();
-            
+
             String argExpression = "*";
             if (!aggregation.getArguments().isEmpty()) {
                 ConnectorExpression arg = aggregation.getArguments().get(0);
                 if (arg instanceof Variable) {
                     String varName = ((Variable) arg).getName();
-                    Db2ColumnHandle colHandle = (Db2ColumnHandle) assignments.get(varName);
-                    argExpression = "\"" + colHandle.getColumnName().toUpperCase() + "\"";
+                    ColumnHandle colHandle = assignments.get(varName);
+                    if (colHandle != null) {
+                        Db2ColumnHandle db2Col = (Db2ColumnHandle) colHandle;
+                        argExpression = "\"" + db2Col.getColumnName().toUpperCase() + "\"";
+                    } else {
+                        // Se não conseguir resolver a coluna argumento, aborta
+                        return Optional.empty();
+                    }
                 }
             }
 
             String sqlExpression = functionName.toUpperCase() + "(" + argExpression + ")";
-            
-            String alias = "agg_" + aggIndex++;
-            selectList.add(sqlExpression + " AS \"" + alias + "\"");
 
-            // Cria o Handle para o Trino entender essa nova coluna calculada
-            Db2ColumnHandle newHandle = new Db2ColumnHandle(alias, aggregation.getOutputType());
-            aggregateHandles.add(newHandle);
+            String alias = "agg_" + aggIndex;
+            String upperAlias = alias.toUpperCase();
+            selectList.add(sqlExpression + " AS \"" + upperAlias + "\"");
+
+            // Cria o handle da nova coluna de agregação com o alias
+            Db2ColumnHandle newHandle = new Db2ColumnHandle(upperAlias, aggregation.getOutputType());
+
+            // Adiciona à projeção de saída
+            Variable variable = new Variable(upperAlias, aggregation.getOutputType());
+            projections.add(variable);
+            assignmentsList.add(new io.trino.spi.connector.Assignment(
+                    upperAlias,
+                    newHandle,
+                    aggregation.getOutputType()
+            ));
+
+            aggIndex++;
         }
 
+        // Construir SQL de Agregação
         String sourceSql = handle.getSqlQueryAsString();
         if (sourceSql == null) {
-            sourceSql = handle.getSchemaTableName().getSchemaName() + "." + handle.getSchemaTableName().getTableName();
+            StringBuilder baseQuery = new StringBuilder();
+            baseQuery.append("SELECT * FROM \"")
+                    .append(handle.getSchemaTableName().getSchemaName().toUpperCase())
+                    .append("\".\"")
+                    .append(handle.getSchemaTableName().getTableName().toUpperCase())
+                    .append("\"");
+
+            if (!handle.getConstraint().isAll()) {
+                String whereClause = buildWhereClause(handle.getConstraint());
+                if (!whereClause.isEmpty()) {
+                    baseQuery.append(" WHERE ").append(whereClause);
+                }
+            }
+
+            if (!handle.getSortOrder().isEmpty()) {
+                baseQuery.append(" ORDER BY ");
+                List<String> orderClauses = new ArrayList<>();
+                for (SortItem item : handle.getSortOrder()) {
+                    String direction = item.getSortOrder().isAscending() ? "ASC" : "DESC";
+                    orderClauses.add("\"" + item.getName().toUpperCase() + "\" " + direction);
+                }
+                baseQuery.append(String.join(", ", orderClauses));
+            }
+
+            if (handle.getLimit().isPresent()) {
+                baseQuery.append(" FETCH FIRST ").append(handle.getLimit().get()).append(" ROWS ONLY");
+            }
+
+            sourceSql = "(" + baseQuery.toString() + ")";
         } else {
             sourceSql = "(" + sourceSql + ")";
         }
@@ -320,7 +372,7 @@ public class Db2Metadata implements ConnectorMetadata {
         StringBuilder sql = new StringBuilder();
         sql.append("SELECT ").append(String.join(", ", selectList));
         sql.append(" FROM ").append(sourceSql).append(" AS T_AGG");
-        
+
         if (!groupByList.isEmpty()) {
             sql.append(" GROUP BY ").append(String.join(", ", groupByList));
         }
@@ -336,16 +388,21 @@ public class Db2Metadata implements ConnectorMetadata {
 
         return Optional.of(new AggregationApplicationResult<ConnectorTableHandle>(
                 newTableHandle,
-                assignmentsMap,
-                aggregateHandles,
-                assignmentsMap,
-                false
+                projections,              // Lista com APENAS as agregações
+                assignmentsList,          // Lista com APENAS os assignments das agregações
+                groupingColumnMapping,    // Map das colunas de agrupamento (identity mapping)
+                false                     // precalculateStatistics
         ));
     }
 
-    // Helper simples para validar funções
+    // Helper para validar funções suportadas
     private boolean isSupportedAggregation(String name) {
         return List.of("count", "sum", "min", "max", "avg").contains(name.toLowerCase());
+    }
+
+    // Helper para construir cláusula WHERE a partir do TupleDomain
+    private String buildWhereClause(TupleDomain<ColumnHandle> constraint) {
+        return "";
     }
 
     @Override
