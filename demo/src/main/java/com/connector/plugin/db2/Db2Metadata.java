@@ -279,7 +279,7 @@ public class Db2Metadata implements ConnectorMetadata {
         List<io.trino.spi.connector.Assignment> assignmentsList = new ArrayList<>();
         Map<ColumnHandle, ColumnHandle> groupingColumnMapping = new HashMap<>();
 
-        Processar Colunas de Agrupamento
+        // Processar Colunas de Agrupamento
         for (ColumnHandle groupCol : groupByColumns) {
             Db2ColumnHandle db2Col = (Db2ColumnHandle) groupCol;
 
