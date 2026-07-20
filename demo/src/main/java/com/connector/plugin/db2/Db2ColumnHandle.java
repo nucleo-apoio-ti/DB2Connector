@@ -2,13 +2,18 @@ package com.connector.plugin.db2;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import io.airlift.slice.SizeOf;
 import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.type.Type;
 
 import java.util.Objects;
 
+import static io.airlift.slice.SizeOf.estimatedSizeOf;
+
 public class Db2ColumnHandle implements ColumnHandle {
-    
+
+    private static final int INSTANCE_SIZE = SizeOf.instanceSize(Db2ColumnHandle.class);
+
     private final String columnName;
     private final Type columnType;
 
@@ -28,6 +33,10 @@ public class Db2ColumnHandle implements ColumnHandle {
     @JsonProperty
     public Type getColumnType() {
         return columnType;
+    }
+
+    public long getRetainedSizeInBytes() {
+        return INSTANCE_SIZE + estimatedSizeOf(columnName);
     }
 
     @Override
