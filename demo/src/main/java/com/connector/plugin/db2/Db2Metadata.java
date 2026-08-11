@@ -11,8 +11,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
-import com.google.common.collect.ImmutableList;
-
 import io.trino.spi.StandardErrorCode;
 import io.trino.spi.TrinoException;
 import io.trino.spi.connector.AggregateFunction;
